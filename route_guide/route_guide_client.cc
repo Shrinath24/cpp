@@ -1,28 +1,11 @@
-/*
- *
- * Copyright 2015 gRPC authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
-
 #include <chrono>
 #include <iostream>
 #include <memory>
 #include <random>
 #include <string>
+#include <sstream>
 #include <thread>
-
+#include <fstream>
 #include <grpc/grpc.h>
 #include <grpcpp/channel.h>
 #include <grpcpp/client_context.h>
@@ -33,41 +16,182 @@
 #else
 #include "route_guide.grpc.pb.h"
 #endif
-
+using namespace std;
 using grpc::Channel;
 using grpc::ClientContext;
 using grpc::ClientReader;
 using grpc::ClientReaderWriter;
 using grpc::ClientWriter;
 using grpc::Status;
-using routeguide::Point;
-using routeguide::Feature;
-using routeguide::Rectangle;
-using routeguide::RouteSummary;
-using routeguide::RouteNote;
 using routeguide::RouteGuide;
+using routeguide::Input;
+using routeguide::Stats;
+static unsigned long long lastTotalUser, lastTotalUserLow, lastTotalSys, lastTotalIdle;
 
-Point MakePoint(long latitude, long longitude) {
-  Point p;
-  p.set_latitude(latitude);
-  p.set_longitude(longitude);
-  return p;
+const int NUM_CPU_STATES = 10;
+
+enum CPUStates
+{
+	S_USER = 0,
+	S_NICE,
+	S_SYSTEM,
+	S_IDLE,
+	S_IOWAIT,
+	S_IRQ,
+	S_SOFTIRQ,
+	S_STEAL,
+	S_GUEST,
+	S_GUEST_NICE
+};
+
+typedef struct CPUData
+{
+	std::string cpu;
+	size_t times[NUM_CPU_STATES];
+} CPUData;
+
+void ReadStatsCPU(std::vector<CPUData> & entries);
+
+size_t GetIdleTime(const CPUData & e);
+size_t GetActiveTime(const CPUData & e);
+
+double PrintStats(const std::vector<CPUData> & entries1, const std::vector<CPUData> & entries2);
+
+double getcpustatistics()
+{
+	std::vector<CPUData> entries1;
+	std::vector<CPUData> entries2;
+
+	// snapshot 1
+	ReadStatsCPU(entries1);
+
+	// 100ms pause
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+	// snapshot 2
+	ReadStatsCPU(entries2);
+
+	// print output
+	return PrintStats(entries1, entries2);
 }
 
-Feature MakeFeature(const std::string& name,
-                    long latitude, long longitude) {
-  Feature f;
-  f.set_name(name);
-  f.mutable_location()->CopyFrom(MakePoint(latitude, longitude));
-  return f;
+void ReadStatsCPU(std::vector<CPUData> & entries)
+{
+	std::ifstream fileStat("/proc/stat");
+
+	std::string line;
+
+	const std::string STR_CPU("cpu");
+	const std::size_t LEN_STR_CPU = STR_CPU.size();
+	const std::string STR_TOT("tot");
+
+	while(std::getline(fileStat, line))
+	{
+		// cpu stats line found
+		if(!line.compare(0, LEN_STR_CPU, STR_CPU))
+		{
+			std::istringstream ss(line);
+
+			// store entry
+			entries.emplace_back(CPUData());
+			CPUData & entry = entries.back();
+
+			// read cpu label
+			ss >> entry.cpu;
+
+			// remove "cpu" from the label when it's a processor number
+			if(entry.cpu.size() > LEN_STR_CPU)
+				entry.cpu.erase(0, LEN_STR_CPU);
+			// replace "cpu" with "tot" when it's total values
+			else
+				entry.cpu = "";
+
+			// read times
+			for(int i = 0; i < NUM_CPU_STATES; ++i)
+				ss >> entry.times[i];
+		}
+	}
 }
 
-RouteNote MakeRouteNote(const std::string& message,
-                        long latitude, long longitude) {
-  RouteNote n;
-  n.set_message(message);
-  n.mutable_location()->CopyFrom(MakePoint(latitude, longitude));
-  return n;
+size_t GetIdleTime(const CPUData & e)
+{
+	return	e.times[S_IDLE] +
+			e.times[S_IOWAIT];
+}
+
+size_t GetActiveTime(const CPUData & e)
+{
+	return	e.times[S_USER] +
+			e.times[S_NICE] +
+			e.times[S_SYSTEM] +
+			e.times[S_IRQ] +
+			e.times[S_SOFTIRQ] +
+			e.times[S_STEAL] +
+			e.times[S_GUEST] +
+			e.times[S_GUEST_NICE];
+}
+
+double PrintStats(const std::vector<CPUData> & entries1, const std::vector<CPUData> & entries2)
+{
+	const size_t NUM_ENTRIES = entries1.size();
+	double value;
+	for(size_t i = 0; i < 1; ++i)
+	{
+		const CPUData & e1 = entries1[i];
+		const CPUData & e2 = entries2[i];
+
+		std::cout.width(3);
+
+		const float ACTIVE_TIME	= static_cast<float>(GetActiveTime(e2) - GetActiveTime(e1));
+		const float IDLE_TIME	= static_cast<float>(GetIdleTime(e2) - GetIdleTime(e1));
+		const float TOTAL_TIME	= ACTIVE_TIME + IDLE_TIME;
+
+		std::cout.setf(std::ios::fixed, std::ios::floatfield);
+		std::cout.width(6);
+		std::cout.precision(2);
+		value =(100.f * ACTIVE_TIME / TOTAL_TIME);
+
+		return value;
+	}
+}
+
+void init(){
+    FILE* file = fopen("/proc/stat", "r");
+    fscanf(file, "cpu %llu %llu %llu %llu", &lastTotalUser, &lastTotalUserLow,
+        &lastTotalSys, &lastTotalIdle);
+    fclose(file);
+}
+
+double getCurrentValue(){
+    double percent;
+    FILE* file;
+    unsigned long long totalUser, totalUserLow, totalSys, totalIdle, total;
+
+    file = fopen("/proc/stat", "r");
+    fscanf(file, "cpu %llu %llu %llu %llu", &totalUser, &totalUserLow,
+        &totalSys, &totalIdle);
+    fclose(file);
+
+    if (totalUser < lastTotalUser || totalUserLow < lastTotalUserLow ||
+        totalSys < lastTotalSys || totalIdle < lastTotalIdle){
+        //Overflow detection. Just skip this value.
+        percent = -1.0;
+    }
+    else{
+        total = (totalUser - lastTotalUser) + (totalUserLow - lastTotalUserLow) +
+            (totalSys - lastTotalSys);
+        percent = total;
+        total += (totalIdle - lastTotalIdle);
+        percent /= total;
+        percent *= 100;
+    }
+
+    lastTotalUser = totalUser;
+    lastTotalUserLow = totalUserLow;
+    lastTotalSys = totalSys;
+    lastTotalIdle = totalIdle;
+
+    return percent*100;
 }
 
 class RouteGuideClient {
@@ -77,163 +201,70 @@ class RouteGuideClient {
    // routeguide::ParseDb(db, &feature_list_);
   }
 
-  void GetFeature() {
-    Point point;
-    Feature feature;
-    point = MakePoint(409146138, -746188906);
-    GetOneFeature(point, &feature);
-    point = MakePoint(0, 0);
-    GetOneFeature(point, &feature);
+  void GetStatus(string server, string ip) {
+    Input input;
+    Stats cpustats;
+    input.set_server(server);
+    input.set_ip(ip);
+    double metrics=getcpustatistics();
+    cout<<to_string(metrics);
+    input.set_cpumet(to_string(metrics));
+    //cout<<"here";
+    GetOneCPUStats(input, &cpustats);
   }
 
-  void ListFeatures() {
-    routeguide::Rectangle rect;
-    Feature feature;
-    ClientContext context;
-
-    rect.mutable_lo()->set_latitude(400000000);
-    rect.mutable_lo()->set_longitude(-750000000);
-    rect.mutable_hi()->set_latitude(420000000);
-    rect.mutable_hi()->set_longitude(-730000000);
-    std::cout << "Looking for features between 40, -75 and 42, -73"
-              << std::endl;
-
-    std::unique_ptr<ClientReader<Feature> > reader(
-        stub_->ListFeatures(&context, rect));
-    while (reader->Read(&feature)) {
-      std::cout << "Found feature called "
-                << feature.name() << " at "
-                << feature.location().latitude()/kCoordFactor_ << ", "
-                << feature.location().longitude()/kCoordFactor_ << std::endl;
-    }
-    Status status = reader->Finish();
-    if (status.ok()) {
-      std::cout << "ListFeatures rpc succeeded." << std::endl;
-    } else {
-      std::cout << "ListFeatures rpc failed." << std::endl;
-    }
-  }
-
-  void RecordRoute() {
-    Point point;
-    RouteSummary stats;
-    ClientContext context;
-    const int kPoints = 10;
-    unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
-
-    std::default_random_engine generator(seed);
-    std::uniform_int_distribution<int> feature_distribution(
-        0, feature_list_.size() - 1);
-    std::uniform_int_distribution<int> delay_distribution(
-        500, 1500);
-
-    std::unique_ptr<ClientWriter<Point> > writer(
-        stub_->RecordRoute(&context, &stats));
-    for (int i = 0; i < kPoints; i++) {
-      const Feature& f = feature_list_[feature_distribution(generator)];
-      std::cout << "Visiting point "
-                << f.location().latitude()/kCoordFactor_ << ", "
-                << f.location().longitude()/kCoordFactor_ << std::endl;
-      if (!writer->Write(f.location())) {
-        // Broken stream.
-        break;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(
-          delay_distribution(generator)));
-    }
-    writer->WritesDone();
-    Status status = writer->Finish();
-    if (status.ok()) {
-      std::cout << "Finished trip with " << stats.point_count() << " points\n"
-                << "Passed " << stats.feature_count() << " features\n"
-                << "Travelled " << stats.distance() << " meters\n"
-                << "It took " << stats.elapsed_time() << " seconds"
-                << std::endl;
-    } else {
-      std::cout << "RecordRoute rpc failed." << std::endl;
-    }
-  }
-
-  void RouteChat() {
-    ClientContext context;
-
-    std::shared_ptr<ClientReaderWriter<RouteNote, RouteNote> > stream(
-        stub_->RouteChat(&context));
-
-    std::thread writer([stream]() {
-      std::vector<RouteNote> notes{
-        MakeRouteNote("First message", 0, 0),
-        MakeRouteNote("Second message", 0, 1),
-        MakeRouteNote("Third message", 1, 0),
-        MakeRouteNote("Fourth message", 0, 0)};
-      for (const RouteNote& note : notes) {
-        std::cout << "Sending message " << note.message()
-                  << " at " << note.location().latitude() << ", "
-                  << note.location().longitude() << std::endl;
-        stream->Write(note);
-      }
-      stream->WritesDone();
-    });
-
-    RouteNote server_note;
-    while (stream->Read(&server_note)) {
-      std::cout << "Got message " << server_note.message()
-                << " at " << server_note.location().latitude() << ", "
-                << server_note.location().longitude() << std::endl;
-    }
-    writer.join();
-    Status status = stream->Finish();
-    if (!status.ok()) {
-      std::cout << "RouteChat rpc failed." << std::endl;
-    }
-  }
+  void ListServers() {
+  		Input inSend;
+  		Input inReceive;
+  		ClientContext context;
+  		std::cout << "Looking for users"
+  				<< std::endl;
+  		inSend.set_server("i-024fe56765e22dc3d");
+  		std::unique_ptr<ClientReader<Input> > reader(
+  				stub_->ListServers(&context, inReceive));
+  		while (reader->Read(&inSend)) {
+  			cout<<inSend.server()<<"  "<<inSend.cpumet()<<"  "<<inSend.status()<<std::endl;
+  		}
+  		Status grpcStatus = reader->Finish();
+  		if (grpcStatus.ok()) {
+  			std::cout << "ListFeatures rpc succeeded." << std::endl;
+  		} else {
+  			std::cout << "ListFeatures rpc failed." << std::endl;
+  		}
+  	}
 
  private:
 
-  bool GetOneFeature(const Point& point, Feature* feature) {
+
+  bool GetOneCPUStats(const Input& input, Stats* cpustats) {
     ClientContext context;
-    Status status = stub_->GetFeature(&context, point, feature);
+    Status status = stub_->GetStatus(&context, input, cpustats);
     if (!status.ok()) {
       std::cout << "GetFeature rpc failed." << std::endl;
       return false;
     }
-    if (!feature->has_location()) {
-      std::cout << "Server returns incomplete feature." << std::endl;
-      return false;
-    }
-    if (feature->name().empty()) {
-      std::cout << "Found no feature at "
-                << feature->location().latitude()/kCoordFactor_ << ", "
-                << feature->location().longitude()/kCoordFactor_ << std::endl;
-    } else {
-      std::cout << "Found feature called " << feature->name()  << " at "
-                << feature->location().latitude()/kCoordFactor_ << ", "
-                << feature->location().longitude()/kCoordFactor_ << std::endl;
-    }
+    cout<<cpustats->cpuuse();
     return true;
   }
 
-  const float kCoordFactor_ = 10000000.0;
   std::unique_ptr<RouteGuide::Stub> stub_;
-  std::vector<Feature> feature_list_;
 };
 
 int main(int argc, char** argv) {
-  // Expect only arg: --db_path=path/to/route_guide_db.json.
   std::string db = "";
+  string loadbalancerip=argv[4];
+  std::cout <<loadbalancerip;
   RouteGuideClient guide(
-      grpc::CreateChannel("localhost:50051",
+      grpc::CreateChannel(loadbalancerip+":50051",
                           grpc::InsecureChannelCredentials()),
       db);
 
   std::cout << "-------------- GetFeature --------------" << std::endl;
-  guide.GetFeature();
-  std::cout << "-------------- ListFeatures --------------" << std::endl;
-  guide.ListFeatures();
-  std::cout << "-------------- RecordRoute --------------" << std::endl;
-  guide.RecordRoute();
-  std::cout << "-------------- RouteChat --------------" << std::endl;
-  guide.RouteChat();
-
+  if(strcmp(argv[1],"1")==0){
+  guide.GetStatus(argv[2],argv[3]);
+  }else{
+	  guide.ListServers();
+	  cout<<argv[1];
+  }
   return 0;
 }
