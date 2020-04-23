@@ -1,39 +1,41 @@
-/*
- *
- * Copyright 2015 gRPC authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
-
+#include "stdlib.h"
+#include "stdio.h"
+#include "string.h"
+#include "sys/types.h"
+#include "sys/sysinfo.h"
+#include <iostream>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iostream>
 #include <memory>
+#include <queue>
 #include <string>
-
+#include "stdlib.h"
+#include "stdio.h"
+#include "string.h"
+#include "sys/types.h"
+#include "sys/sysinfo.h"
 #include <grpc/grpc.h>
 #include <grpcpp/server.h>
+#include <chrono>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <vector>
 #include <grpcpp/server_builder.h>
 #include <grpcpp/server_context.h>
 #include <grpcpp/security/server_credentials.h>
+#include <list>
 #ifdef BAZEL_BUILD
 #include "examples/protos/route_guide.grpc.pb.h"
 #else
 #include "route_guide.grpc.pb.h"
 #endif
 
+using namespace std;
 using grpc::Server;
 using grpc::ServerBuilder;
 using grpc::ServerContext;
@@ -41,134 +43,99 @@ using grpc::ServerReader;
 using grpc::ServerReaderWriter;
 using grpc::ServerWriter;
 using grpc::Status;
-using routeguide::Point;
-using routeguide::Feature;
-using routeguide::Rectangle;
-using routeguide::RouteSummary;
-using routeguide::RouteNote;
-using routeguide::RouteGuide;
 using std::chrono::system_clock;
+using routeguide::Input;
+using routeguide::Stats;
+using routeguide::RouteGuide;
+//using routeguide::GetStatus;
 
-
-float ConvertToRadians(float num) {
-  return num * 3.1415926 /180;
+struct square {
+	string serverID;
+	string ip;
+	string cpu_metric;
+	int status;
+} square;
+list<struct square> workingset;
+std::queue<string> Qservers;
+std::queue<string> Rservers;
+string Qserver;
+static unsigned long long lastTotalUser, lastTotalUserLow, lastTotalSys, lastTotalIdle;
+string loadBalancerIP;
+int checkForThreshold(){
+	struct square temp;
+	for(auto it = workingset.begin(); it != workingset.end(); ++it){
+		double cpu_metrics = atof(((*it).cpu_metric).c_str());
+		if(cpu_metrics>0.0){
+			return 0;
+		}
+	}
+	//	cout<<get_current_dir()<<"\n";
+	return 1;
+}
+void addServersQueue(){
+	Qservers.push("i-09a734a7f49469fed");
+}
+string getFromQ(){
+	string serverIDQueue = Qservers.front();
+	return serverIDQueue;
 }
 
-// The formula is based on http://mathforum.org/library/drmath/view/51879.html
-float GetDistance(const Point& start, const Point& end) {
-  const float kCoordFactor = 10000000.0;
-  float lat_1 = start.latitude() / kCoordFactor;
-  float lat_2 = end.latitude() / kCoordFactor;
-  float lon_1 = start.longitude() / kCoordFactor;
-  float lon_2 = end.longitude() / kCoordFactor;
-  float lat_rad_1 = ConvertToRadians(lat_1);
-  float lat_rad_2 = ConvertToRadians(lat_2);
-  float delta_lat_rad = ConvertToRadians(lat_2-lat_1);
-  float delta_lon_rad = ConvertToRadians(lon_2-lon_1);
-
-  float a = pow(sin(delta_lat_rad/2), 2) + cos(lat_rad_1) * cos(lat_rad_2) *
-            pow(sin(delta_lon_rad/2), 2);
-  float c = 2 * atan2(sqrt(a), sqrt(1-a));
-  int R = 6371000; // metres
-
-  return R * c;
+int newServer(){
+string command = "./check.sh";
+string serverIdFromQ = getFromQ();
+command = command +" "+ serverIdFromQ+" "+loadBalancerIP;;
+system(command.c_str());
 }
 
-std::string GetFeatureName(const Point& point,
-                           const std::vector<Feature>& feature_list) {
-  for (const Feature& f : feature_list) {
-    if (f.location().latitude() == point.latitude() &&
-        f.location().longitude() == point.longitude()) {
-      return f.name();
-    }
-  }
-  return "";
+int addServer(string serverId, string serverIp, string servercpumet){
+	struct square temp;
+	for(auto it = workingset.begin(); it != workingset.end(); ++it){
+		if((*it).serverID==serverId){
+			(*it).ip=serverIp;
+			(*it).cpu_metric=servercpumet;
+			(*it).status=checkForThreshold();
+			if((*it).status  == 0){
+				newServer();
+			}
+			return 2;
+		}
+	}
+	temp.serverID=serverId;
+	temp.ip=serverIp;
+	temp.cpu_metric=servercpumet;
+    temp.status=checkForThreshold();
+	workingset.push_front(temp);
+	//system("./check.sh ");
+	return 3;
+	//	cout<<get_current_dir()<<"\n";
 }
 
 class RouteGuideImpl final : public RouteGuide::Service {
  public:
   explicit RouteGuideImpl(const std::string& db) {
-   // routeguide::ParseDb(db, &feature_list_);
+    //routeguide::ParseDb(db, &feature_list_);
   }
 
-  Status GetFeature(ServerContext* context, const Point* point,
-                    Feature* feature) override {
-    feature->set_name(GetFeatureName(*point, feature_list_));
-    feature->mutable_location()->CopyFrom(*point);
-    return Status::OK;
+  Status GetStatus(ServerContext* context, const Input* input,
+                    Stats* cpustats) override {
+	  addServer(input->server(), input->ip(), input->cpumet());
+	  newServer();
+      return Status::OK;
   }
 
-  Status ListFeatures(ServerContext* context,
-                      const routeguide::Rectangle* rectangle,
-                      ServerWriter<Feature>* writer) override {
-    auto lo = rectangle->lo();
-    auto hi = rectangle->hi();
-    long left = (std::min)(lo.longitude(), hi.longitude());
-    long right = (std::max)(lo.longitude(), hi.longitude());
-    long top = (std::max)(lo.latitude(), hi.latitude());
-    long bottom = (std::min)(lo.latitude(), hi.latitude());
-    for (const Feature& f : feature_list_) {
-      if (f.location().longitude() >= left &&
-          f.location().longitude() <= right &&
-          f.location().latitude() >= bottom &&
-          f.location().latitude() <= top) {
-        writer->Write(f);
-      }
-    }
-    return Status::OK;
-  }
-
-  Status RecordRoute(ServerContext* context, ServerReader<Point>* reader,
-                     RouteSummary* summary) override {
-    Point point;
-    int point_count = 0;
-    int feature_count = 0;
-    float distance = 0.0;
-    Point previous;
-
-    system_clock::time_point start_time = system_clock::now();
-    while (reader->Read(&point)) {
-      point_count++;
-      if (!GetFeatureName(point, feature_list_).empty()) {
-        feature_count++;
-      }
-      if (point_count != 1) {
-        distance += GetDistance(previous, point);
-      }
-      previous = point;
-    }
-    system_clock::time_point end_time = system_clock::now();
-    summary->set_point_count(point_count);
-    summary->set_feature_count(feature_count);
-    summary->set_distance(static_cast<long>(distance));
-    auto secs = std::chrono::duration_cast<std::chrono::seconds>(
-        end_time - start_time);
-    summary->set_elapsed_time(secs.count());
-
-    return Status::OK;
-  }
-
-  Status RouteChat(ServerContext* context,
-                   ServerReaderWriter<RouteNote, RouteNote>* stream) override {
-    RouteNote note;
-    while (stream->Read(&note)) {
-      std::unique_lock<std::mutex> lock(mu_);
-      for (const RouteNote& n : received_notes_) {
-        if (n.location().latitude() == note.location().latitude() &&
-            n.location().longitude() == note.location().longitude()) {
-          stream->Write(n);
-        }
-      }
-      received_notes_.push_back(note);
-    }
-
-    return Status::OK;
-  }
-
- private:
-  std::vector<Feature> feature_list_;
-  std::mutex mu_;
-  std::vector<RouteNote> received_notes_;
+  Status ListServers(ServerContext* context, const Input* input,
+			ServerWriter<Input>* writer) override {
+	  Input inputLoop;
+		for(auto it = workingset.begin(); it != workingset.end(); ++it){
+			inputLoop.set_server((*it).serverID);
+			inputLoop.set_ip((*it).ip);
+			inputLoop.set_cpumet((*it).cpu_metric);
+			inputLoop.set_status((*it).status);
+			const Input& inputLoopin = inputLoop;
+			writer->Write(inputLoopin);
+		}
+		return Status::OK;
+	}
 };
 
 void RunServer(const std::string& db_path) {
@@ -186,6 +153,8 @@ void RunServer(const std::string& db_path) {
 int main(int argc, char** argv) {
   // Expect only arg: --db_path=path/to/route_guide_db.json.
   std::string db = "";
+  loadBalancerIP=argv[1];
+  addServersQueue();
   RunServer(db);
 
   return 0;
