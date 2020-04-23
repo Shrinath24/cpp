@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "io.grpc.examples.routeguide";
+option java_outer_classname = "RouteGuideProto";
+option objc_class_prefix = "RTG";
+
+package routeguide;
+
+service RouteGuide {
+  rpc GetStatus(Input) returns (Stats) {}
+  rpc ListServers(Input) returns (stream Input) {}
+}
+message Input{
+  string server=1;
+  string ip=2;
+  string cpumet=3;
+  int32 status=4;
+}
+message Stats{
+  string cpuuse=1;
+}
