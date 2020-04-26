@@ -10,6 +10,7 @@ package routeguide;
 service RouteGuide {
   rpc GetStatus(Input) returns (Stats) {}
   rpc ListServers(Input) returns (stream Input) {}
+ rpc ListServerslist(List) returns (stream List) {}
 }
 message Input{
   string server=1;
@@ -19,4 +20,7 @@ message Input{
 }
 message Stats{
   string cpuuse=1;
+}
+message List{
+  string serverlist=1;
 }
