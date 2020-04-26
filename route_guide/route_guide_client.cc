@@ -26,6 +26,7 @@ using grpc::Status;
 using routeguide::RouteGuide;
 using routeguide::Input;
 using routeguide::Stats;
+using routeguide::List;
 static unsigned long long lastTotalUser, lastTotalUserLow, lastTotalSys, lastTotalIdle;
 
 const int NUM_CPU_STATES = 10;
@@ -213,23 +214,42 @@ class RouteGuideClient {
     GetOneCPUStats(input, &cpustats);
   }
 
+  void ListServerslist() {
+	  List list;
+  		List listR;
+  		ClientContext context;
+  		std::cout << "Live VMs"
+  				<< std::endl;
+  		list.set_serverlist("i-024fe56765e22dc3d");
+  		std::unique_ptr<ClientReader<List> > reader(
+  				stub_->ListServerslist(&context, listR));
+  		while (reader->Read(&list)) {
+  			cout<<list.serverlist()<<std::endl;
+  		}
+  		Status grpcStatus = reader->Finish();
+  		if (grpcStatus.ok()) {
+  			std::cout << "List rpc succeeded." << std::endl;
+  		} else {
+  			std::cout << "List rpc failed." << std::endl;
+  		}
+  	}
   void ListServers() {
   		Input inSend;
   		Input inReceive;
   		ClientContext context;
-  		std::cout << "Looking for users"
+  		std::cout << "Servers list      CPU metrics"
   				<< std::endl;
   		inSend.set_server("i-024fe56765e22dc3d");
   		std::unique_ptr<ClientReader<Input> > reader(
   				stub_->ListServers(&context, inReceive));
   		while (reader->Read(&inSend)) {
-  			cout<<inSend.server()<<"  "<<inSend.cpumet()<<"  "<<inSend.status()<<std::endl;
+  			cout<<inSend.server()<<"  "<<inSend.cpumet()<<"  "<<std::endl;
   		}
   		Status grpcStatus = reader->Finish();
   		if (grpcStatus.ok()) {
-  			std::cout << "ListFeatures rpc succeeded." << std::endl;
+  			std::cout << "servers list rpc succeeded." << std::endl;
   		} else {
-  			std::cout << "ListFeatures rpc failed." << std::endl;
+  			std::cout << "servers list rpc failed." << std::endl;
   		}
   	}
 
@@ -259,11 +279,12 @@ int main(int argc, char** argv) {
                           grpc::InsecureChannelCredentials()),
       db);
 
-  std::cout << "-------------- GetFeature --------------" << std::endl;
+  std::cout << "\n-------------- metrics sent --------------" << std::endl;
   if(strcmp(argv[1],"1")==0){
   guide.GetStatus(argv[2],argv[3]);
   }else{
 	  guide.ListServers();
+	  guide.ListServerslist();
 	  cout<<argv[1];
   }
   return 0;
